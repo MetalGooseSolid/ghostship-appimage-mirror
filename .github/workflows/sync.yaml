@@ -1,0 +1,71 @@
+name: Sync AppImage
+
+on:
+  schedule:
+    - cron: '32 12 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Process Update
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPSTREAM_REPO: "HarbourMasters/Ghostship"
+          PATTERN: "*Linux.zip"
+          
+        run: |
+          echo "Checking $UPSTREAM_REPO..."
+
+          # 1. Get Latest Tag AND Release Title from Upstream
+          # We fetch JSON data to get the release title
+          UPSTREAM_DATA=$(gh release list --repo "$UPSTREAM_REPO" --limit 1 --json tagName,name)
+          
+          LATEST_TAG=$(echo "$UPSTREAM_DATA" | jq -r '.[0].tagName')
+          RELEASE_TITLE=$(echo "$UPSTREAM_DATA" | jq -r '.[0].name')
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "Error: Could not find any releases in $UPSTREAM_REPO"
+            exit 1
+          fi
+
+          echo "Latest version: $LATEST_TAG"
+          echo "Release Title: $RELEASE_TITLE"
+
+          # 2. Check if we already have this release locally
+          if gh release view "$LATEST_TAG" > /dev/null 2>&1; then
+            echo "Release $LATEST_TAG already exists. Exiting."
+            exit 0
+          fi
+
+          echo "New update found! Downloading..."
+
+          # 3. Download the Linux Zip
+          gh release download "$LATEST_TAG" --repo "$UPSTREAM_REPO" --pattern "$PATTERN" --output update.zip || { echo "Download failed"; exit 1; }
+
+          # 4. Extract
+          unzip -q update.zip -d extracted
+
+          # 5. Find the AppImage (preserve original name)
+          # We capture the full path to the file found inside the zip
+          APPIMAGE_PATH=$(find extracted -type f -iname "*.appimage" | head -n 1)
+
+          if [ -z "$APPIMAGE_PATH" ]; then
+            echo "Error: No .appimage file found inside the zip!"
+            ls -R extracted
+            exit 1
+          fi
+
+          echo "Found AppImage at: $APPIMAGE_PATH"
+
+          # 6. Create Release using Upstream Title and File
+          gh release create "$LATEST_TAG" "$APPIMAGE_PATH" \
+            --title "$RELEASE_TITLE" \
+            --notes "Mirror of $UPSTREAM_REPO ($RELEASE_TITLE)"
